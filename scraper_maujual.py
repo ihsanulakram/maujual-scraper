@@ -14,6 +14,8 @@ from bs4 import BeautifulSoup
 import schedule
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+import http.server
+import socketserver
 
 # Pastikan output console selalu mendukung UTF-8 (termasuk emoji) di semua OS
 if hasattr(sys.stdout, "reconfigure"):
@@ -1318,6 +1320,29 @@ def start_scheduler_loop():
         time.sleep(1)
 
 
+def start_health_check_server():
+    """Menjalankan dummy HTTP server ringan untuk health check platform cloud (seperti Render.com)."""
+    port = int(os.getenv("PORT", "10000"))
+
+    class HealthHandler(http.server.SimpleHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-type", "text/plain; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(b"Maujual Telegram Bot is Running 24/7!")
+
+        def log_message(self, format, *args):
+            pass
+
+    try:
+        socketserver.TCPServer.allow_reuse_address = True
+        with socketserver.TCPServer(("", port), HealthHandler) as httpd:
+            logger.info(f"Health-check server aktif pada port {port} (Render.com ready).")
+            httpd.serve_forever()
+    except Exception as e:
+        logger.warning(f"Tidak dapat memulai health-check server di port {port}: {e}")
+
+
 def main():
     print("=" * 65)
     print("       MAUJUAL.COM HP SCRAPER & MULTI-WISHLIST BOT")
@@ -1331,10 +1356,15 @@ def main():
         logger.info("Mode --once selesai dijalankan. Keluar.")
         return
 
-    # Mode 2: Bot Interaktif 24/7 (Local PC / Termux / Server)
+    # Mode 2: Bot Interaktif 24/7 (Local PC / Termux / Render Cloud)
     if not bot:
         logger.error("TELEGRAM_TOKEN tidak ditemukan. Bot tidak dapat dijalankan.")
         return
+
+    # Aktifkan health-check web server jika berjalan di Render / cloud
+    if os.getenv("PORT") or os.getenv("RENDER"):
+        web_thread = threading.Thread(target=start_health_check_server, daemon=True)
+        web_thread.start()
 
     # Mulai thread background scheduler
     sched_thread = threading.Thread(target=start_scheduler_loop, daemon=True)

@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: maujual-scraper-bot
+    runtime: python
+    region: singapore
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python scraper_maujual.py
+    envVars:
+      - key: TELEGRAM_TOKEN
+        sync: false
+      - key: CHAT_ID
+        sync: false
+      - key: PORT
+        value: 10000
