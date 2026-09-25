@@ -1,3 +1,13 @@
+---
+title: Maujual Bot
+emoji: 📱
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # 📱 Maujual.com HP Scraper & Multi-Wishlist Telegram Bot
 
 Bot Telegram pintar dan otomatis untuk berburu stok HP bekas berkualitas di [shop.maujual.com](https://shop.maujual.com). Dilengkapi **Sistem Multi-Wishlist** (bisa memantau banyak target incaran sekaligus dengan kriteria berbeda), **Foto Produk Asli**, **16 Parameter Spesifikasi Lengkap**, serta otomatisasi GitHub Actions setiap 15 menit.
