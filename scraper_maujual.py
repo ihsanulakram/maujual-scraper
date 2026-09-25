@@ -7,6 +7,7 @@ import re
 import logging
 import threading
 from urllib.parse import urljoin
+from datetime import datetime
 
 import requests
 from bs4 import BeautifulSoup
@@ -38,7 +39,7 @@ def _load_env_file():
 
 _load_env_file()
 
-# Kredensial dibaca murni dari Environment Variables / GitHub Secrets / .env lokal
+# Kredensial murni dari Environment Variables / GitHub Secrets / .env lokal
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 CHAT_ID = os.getenv("CHAT_ID", "")
 
@@ -74,7 +75,7 @@ logger = logging.getLogger("MaujualBot")
 # Inisialisasi Bot Telegram (hanya jika TELEGRAM_TOKEN ada)
 bot = telebot.TeleBot(TELEGRAM_TOKEN, parse_mode="HTML") if TELEGRAM_TOKEN else None
 
-# Memory cache untuk state kuesioner onboarding per-user
+# Memory cache untuk state interaktif per-user
 user_wizard_state = {}
 
 # Daftar Opsi Wizard
@@ -98,66 +99,95 @@ PRICE_PRESETS = [
 
 
 # ==============================================================================
-# PREFERENCES & DATABASE FUNCTIONS
+# PREFERENCES & DATABASE FUNCTIONS (MULTI-WISHLIST)
 # ==============================================================================
 def load_preferences():
-    """Memuat preferensi filter pengguna dari file user_preferences.json."""
-    default_prefs = {
-        "is_configured": False,
-        "is_active": True,
-        "brands": [],
-        "storages": [],
-        "conditions": [],
-        "min_ram_gb": 0,
-        "max_price": 1000000
-    }
+    """
+    Memuat seluruh data preferensi wishlist dari user_preferences.json.
+    Mendukung migrasi otomatis dari format lama (single wishlist).
+    """
+    default_data = {"wishlists": []}
     if not os.path.exists(PREFS_FILE):
-        return default_prefs
+        return default_data
+
     try:
         with open(PREFS_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-            return {**default_prefs, **data}
+
+        # Migrasi dari format lama (single-wishlist)
+        if isinstance(data, dict) and "wishlists" not in data:
+            if "brands" in data or "max_price" in data or "is_configured" in data:
+                legacy_wl = {
+                    "id": f"wl_{int(time.time())}",
+                    "name": "Target Utama",
+                    "is_active": data.get("is_active", True),
+                    "brands": data.get("brands", []),
+                    "storages": data.get("storages", []),
+                    "conditions": data.get("conditions", []),
+                    "min_ram_gb": data.get("min_ram_gb", 0),
+                    "max_price": data.get("max_price", 1000000),
+                    "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                }
+                migrated = {"wishlists": [legacy_wl]}
+                save_preferences(migrated)
+                logger.info("Migrasi data user_preferences.json ke multi-wishlist berhasil.")
+                return migrated
+
+        if isinstance(data, dict) and "wishlists" in data:
+            return data
+
+        return default_data
     except Exception as e:
         logger.error(f"Gagal membaca {PREFS_FILE}: {e}")
-        return default_prefs
+        return default_data
 
 
-def save_preferences(prefs):
-    """Menyimpan preferensi filter pengguna ke file user_preferences.json."""
+def save_preferences(data):
+    """Menyimpan data wishlist ke file user_preferences.json."""
     try:
         with open(PREFS_FILE, "w", encoding="utf-8") as f:
-            json.dump(prefs, f, indent=2, ensure_ascii=False)
+            json.dump(data, f, indent=2, ensure_ascii=False)
         logger.info(f"Preferensi pengguna berhasil disimpan ke {PREFS_FILE}")
     except Exception as e:
         logger.error(f"Gagal menyimpan ke {PREFS_FILE}: {e}")
 
 
-def load_sent_urls():
-    """Memuat daftar URL yang sudah pernah dikirim dari sent_jackpot.json."""
+def load_sent_data():
+    """
+    Memuat riwayat URL produk terkirim per-wishlist.
+    Format: {"wl_id": ["url1", "url2"]}
+    Mendukung migrasi dari format lama (list URL sederhana).
+    """
     if not os.path.exists(DB_FILE):
-        return set()
+        return {}
+
     try:
         with open(DB_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-            if isinstance(data, list):
-                return set(data)
-            return set()
+
+        if isinstance(data, list):
+            # Format lama: list string -> migrasi ke dict
+            return {"_legacy": set(data)}
+        elif isinstance(data, dict):
+            return {k: set(v) for k, v in data.items()}
+        return {}
     except Exception as e:
-        logger.error(f"Gagal membaca file {DB_FILE}: {e}")
-        return set()
+        logger.error(f"Gagal membaca {DB_FILE}: {e}")
+        return {}
 
 
-def save_sent_urls(sent_urls_set):
-    """Menyimpan set URL ke dalam file sent_jackpot.json."""
+def save_sent_data(sent_data):
+    """Menyimpan riwayat URL produk terkirim per-wishlist ke sent_jackpot.json."""
     try:
+        serializable = {k: sorted(list(v)) for k, v in sent_data.items()}
         with open(DB_FILE, "w", encoding="utf-8") as f:
-            json.dump(sorted(list(sent_urls_set)), f, indent=2, ensure_ascii=False)
+            json.dump(serializable, f, indent=2, ensure_ascii=False)
     except Exception as e:
-        logger.error(f"Gagal menyimpan ke file {DB_FILE}: {e}")
+        logger.error(f"Gagal menyimpan ke {DB_FILE}: {e}")
 
 
 # ==============================================================================
-# KEYBOARD BUILDERS (MULTI-SELECT CHECKBOX UI)
+# KEYBOARD BUILDERS
 # ==============================================================================
 def build_brand_markup(selected_brands):
     markup = InlineKeyboardMarkup(row_width=2)
@@ -238,124 +268,247 @@ def build_price_markup():
     return markup
 
 
+def build_wishlist_dashboard_markup(wishlists):
+    """Membangun tombol navigasi untuk Dashboard Multi-Wishlist."""
+    markup = InlineKeyboardMarkup(row_width=1)
+
+    for wl in wishlists:
+        wl_id = wl["id"]
+        wl_name = wl.get("name", "Tanpa Nama")
+        is_act = wl.get("is_active", True)
+        status_icon = "🟢" if is_act else "⏸️"
+        toggle_label = "Jeda ⏸️" if is_act else "Resume ▶️"
+
+        # Baris kontrol per-wishlist
+        row = [
+            InlineKeyboardButton(f"{status_icon} {wl_name}", callback_data=f"wl:view:{wl_id}"),
+            InlineKeyboardButton(toggle_label, callback_data=f"wl:toggle:{wl_id}"),
+            InlineKeyboardButton("🗑️", callback_data=f"wl:del_confirm:{wl_id}")
+        ]
+        markup.row(*row)
+
+    markup.add(
+        InlineKeyboardButton("➕ Tambah Incaran Baru", callback_data="wl:new")
+    )
+    return markup
+
+
 # ==============================================================================
-# TELEGRAM BOT HANDLERS (/start, /filter, /stop, /resume, /status, /help)
+# TELEGRAM BOT HANDLERS (/start, /wishlist, /tambah, /status, /help)
 # ==============================================================================
 if bot:
-    @bot.message_handler(commands=["start", "filter"])
-    def cmd_start_filter(message):
-        """Memulai alur kuesioner onboarding untuk memilih preferensi filter."""
+    @bot.message_handler(commands=["start", "wishlist"])
+    def cmd_wishlist_dashboard(message):
+        """Menampilkan Dashboard Daftar Wishlist Target Pengguna."""
         chat_id = str(message.chat.id)
+        prefs = load_preferences()
+        wishlists = prefs.get("wishlists", [])
+
+        if not wishlists:
+            text = (
+                "👋 <b>Halo! Selamat datang di Bot Pencari HP Maujual.com!</b>\n\n"
+                "Anda belum memiliki target incaran HP di wishlist Anda.\n"
+                "Klik tombol di bawah untuk membuat target incaran pertama Anda!"
+            )
+            markup = InlineKeyboardMarkup()
+            markup.add(InlineKeyboardButton("➕ Tambah Target Incaran Baru", callback_data="wl:new"))
+            bot.send_message(chat_id, text, reply_markup=markup)
+            return
+
+        lines = [
+            "📋 <b>DASHBOARD WISHLIST TARGET HP ANDA</b>",
+            f"<i>Total Incaran: {len(wishlists)} target aktif/terdaftar</i>\n"
+        ]
+
+        for i, wl in enumerate(wishlists, 1):
+            is_act = wl.get("is_active", True)
+            status_tag = "🟢 <b>Aktif</b>" if is_act else "⏸️ <b>Dijeda</b>"
+            brands = ", ".join(wl.get("brands", [])) if wl.get("brands") else "Semua Brand"
+            storages = ", ".join(wl.get("storages", [])) if wl.get("storages") else "Semua Ukuran"
+            conditions = ", ".join(wl.get("conditions", [])) if wl.get("conditions") else "Semua Kondisi"
+            ram = f"Min {wl.get('min_ram_gb', 0)}GB" if wl.get("min_ram_gb", 0) > 0 else "Bebas"
+            p = wl.get("max_price", 0)
+            price_str = f"Maks Rp {p:,}".replace(",", ".") if p > 0 else "Bebas"
+
+            lines.append(
+                f"<b>{i}. {html.escape(wl.get('name', 'Target'))}</b> ({status_tag})\n"
+                f"   • Brand: {brands} | RAM: {ram}\n"
+                f"   • Storage: {storages} | Kondisi: {conditions}\n"
+                f"   • Budget: <b>{price_str}</b>\n"
+            )
+
+        lines.append("💡 <i>Klik tombol di bawah untuk mengelola atau menambah incaran:</i>")
+        text = "\n".join(lines)
+        bot.send_message(chat_id, text, reply_markup=build_wishlist_dashboard_markup(wishlists))
+
+
+    @bot.message_handler(commands=["tambah"])
+    def cmd_tambah_wishlist(message):
+        """Perintah shortcut untuk langsung menambah wishlist baru."""
+        chat_id = str(message.chat.id)
+        start_add_wishlist_wizard(chat_id)
+
+
+    @bot.message_handler(commands=["status"])
+    def cmd_status(message):
+        cmd_wishlist_dashboard(message)
+
+
+    @bot.message_handler(commands=["help"])
+    def cmd_help(message):
+        text = (
+            "📖 <b>Daftar Perintah Bot Maujual:</b>\n\n"
+            "• /wishlist - Buka Dashboard Multi-Wishlist (Kelola semua target incaran)\n"
+            "• /tambah - Tambah target incaran HP baru dengan kriteria kustom\n"
+            "• /status - Cek status monitoring & daftar target aktif\n"
+            "• /help - Tampilkan panduan ini\n\n"
+            "✨ <b>Fitur Utama:</b>\n"
+            "• Mendukung banyak target incaran sekaligus dengan kriteria berbeda\n"
+            "• Notifikasi otomatis memuat <b>Foto HP Asli</b> & <b>16 Spesifikasi Lengkap</b>\n"
+            "• Langsung mengecek stok ready saat wishlist baru dibuat"
+        )
+        bot.send_message(message.chat.id, text)
+
+
+    def start_add_wishlist_wizard(chat_id):
+        """Memulai wizard penambahan wishlist baru: Langkah 1 input nama."""
         user_wizard_state[chat_id] = {
-            "step": "brand",
+            "step": "waiting_name",
+            "name": "",
             "brands": set(),
             "storages": set(),
             "conditions": set(),
             "min_ram_gb": 0,
             "max_price": 1000000
         }
-
         text = (
-            "👋 <b>Halo! Selamat datang di Bot Pencari HP Maujual.com!</b>\n\n"
-            "Mari atur preferensi HP yang ingin Anda cari terlebih dahulu.\n\n"
-            "<b>Langkah 1/5: Pilih Brand HP</b>\n"
-            "<i>(Bisa pilih lebih dari satu dengan menekan tombol, lalu klik 'Selesai & Lanjut')</i>"
+            "📝 <b>Langkah 1/6: Beri Nama Target Incaran Anda</b>\n\n"
+            "Silakan ketik nama label untuk target ini langsung di chat.\n"
+            "Contoh: <code>HP Gaming</code>, <code>Incaran iPhone</code>, atau <code>HP Cadangan</code>"
         )
-        bot.send_message(chat_id, text, reply_markup=build_brand_markup(set()))
-
-
-    @bot.message_handler(commands=["stop", "pause"])
-    def cmd_stop(message):
-        """Menonaktifkan pengiriman notifikasi."""
-        prefs = load_preferences()
-        prefs["is_active"] = False
-        save_preferences(prefs)
-
-        text = (
-            "⏹️ <b>Monitoring Dihentikan</b>\n\n"
-            "Anda tidak akan menerima notifikasi stok lagi.\n"
-            "Ketik /resume atau /start kapan saja untuk mengaktifkan kembali."
-        )
-        bot.send_message(message.chat.id, text)
-
-
-    @bot.message_handler(commands=["resume"])
-    def cmd_resume(message):
-        """Mengaktifkan kembali pengiriman notifikasi."""
-        prefs = load_preferences()
-        prefs["is_active"] = True
-        save_preferences(prefs)
-
-        text = (
-            "▶️ <b>Monitoring Diaktifkan Kembali!</b>\n\n"
-            "Bot kembali memantau stok Maujual.com sesuai preferensi Anda.\n"
-            "Ketik /status untuk melihat filter yang aktif."
-        )
-        bot.send_message(message.chat.id, text)
-
-
-    @bot.message_handler(commands=["status"])
-    def cmd_status(message):
-        """Menampilkan status monitoring dan filter yang sedang aktif."""
-        prefs = load_preferences()
-        status_text = "🟢 Aktif" if prefs.get("is_active", True) else "🔴 Nonaktif (Di-stop)"
-        config_text = "Sudah Dikonfigurasi" if prefs.get("is_configured", False) else "Belum Dikonfigurasi (Ketik /start)"
-
-        brands_str = ", ".join(prefs.get("brands", [])) if prefs.get("brands") else "Semua Brand / Bebas"
-        storages_str = ", ".join(prefs.get("storages", [])) if prefs.get("storages") else "Semua Ukuran / Bebas"
-        conditions_str = ", ".join(prefs.get("conditions", [])) if prefs.get("conditions") else "Semua Kondisi / Bebas"
-        ram_str = f"Min {prefs.get('min_ram_gb')} GB" if prefs.get("min_ram_gb", 0) > 0 else "Bebas"
-
-        max_p = prefs.get("max_price", 0)
-        price_str = f"Maksimal Rp {max_p:,}".replace(",", ".") if max_p > 0 else "Bebas / Tanpa Batas"
-
-        text = (
-            "📊 <b>STATUS MONITORING MAUJUAL</b>\n\n"
-            f"• <b>Status:</b> {status_text}\n"
-            f"• <b>Konfigurasi:</b> {config_text}\n\n"
-            "📋 <b>Filter Kriteria Aktif:</b>\n"
-            f"• <b>Brand:</b> {brands_str}\n"
-            f"• <b>Storage:</b> {storages_str}\n"
-            f"• <b>Kondisi:</b> {conditions_str}\n"
-            f"• <b>RAM Minimal:</b> {ram_str}\n"
-            f"• <b>Batas Harga:</b> {price_str}\n\n"
-            "💡 <i>Gunakan /filter untuk mengubah kriteria atau /stop untuk berhenti.</i>"
-        )
-        bot.send_message(message.chat.id, text)
-
-
-    @bot.message_handler(commands=["help"])
-    def cmd_help(message):
-        text = (
-            "📖 <b>Daftar Perintah Bot:</b>\n\n"
-            "• /start - Mulai onboarding / kuesioner kriteria HP\n"
-            "• /filter - Ubah preferensi kriteria pencarian HP\n"
-            "• /status - Cek status monitoring & filter aktif saat ini\n"
-            "• /stop - Berhenti menerima notifikasi stok\n"
-            "• /resume - Mengaktifkan kembali monitoring stok\n"
-            "• /help - Tampilkan bantuan ini"
-        )
-        bot.send_message(message.chat.id, text)
+        bot.send_message(chat_id, text)
 
 
     @bot.callback_query_handler(func=lambda call: True)
     def handle_callbacks(call):
         chat_id = str(call.message.chat.id)
-        state = user_wizard_state.get(chat_id)
-        if not state:
-            state = {
-                "step": "brand",
-                "brands": set(),
-                "storages": set(),
-                "conditions": set(),
-                "min_ram_gb": 0,
-                "max_price": 1000000
-            }
-            user_wizard_state[chat_id] = state
-
         data = call.data
 
-        # --- STEP 1: BRAND HANDLERS ---
+        # -------------------------------------------------------------
+        # DASHBOARD & WISHLIST MANAGEMENT HANDLERS
+        # -------------------------------------------------------------
+        if data == "wl:new":
+            bot.answer_callback_query(call.id)
+            start_add_wishlist_wizard(chat_id)
+            return
+
+        elif data.startswith("wl:toggle:"):
+            wl_id = data.split(":", 2)[2]
+            prefs = load_preferences()
+            for wl in prefs.get("wishlists", []):
+                if wl["id"] == wl_id:
+                    wl["is_active"] = not wl.get("is_active", True)
+                    status_text = "Diaktifkan kembali" if wl["is_active"] else "Dijeda"
+                    bot.answer_callback_query(call.id, f"Target '{wl['name']}' {status_text}")
+                    break
+            save_preferences(prefs)
+            # Refresh dashboard view
+            cmd_wishlist_dashboard(call.message)
+            return
+
+        elif data.startswith("wl:del_confirm:"):
+            wl_id = data.split(":", 2)[2]
+            prefs = load_preferences()
+            wl = next((w for w in prefs.get("wishlists", []) if w["id"] == wl_id), None)
+            if not wl:
+                bot.answer_callback_query(call.id, "Target tidak ditemukan")
+                return
+
+            bot.answer_callback_query(call.id)
+            markup = InlineKeyboardMarkup()
+            markup.row(
+                InlineKeyboardButton("❌ Batal", callback_data="wl:back"),
+                InlineKeyboardButton("🗑️ Ya, Hapus", callback_data=f"wl:delete:{wl_id}")
+            )
+            bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=call.message.message_id,
+                text=f"⚠️ <b>Konfirmasi Hapus Target</b>\n\nApakah Anda yakin ingin menghapus target <b>'{html.escape(wl['name'])}'</b>?",
+                reply_markup=markup
+            )
+            return
+
+        elif data.startswith("wl:delete:"):
+            wl_id = data.split(":", 2)[2]
+            prefs = load_preferences()
+            original_len = len(prefs.get("wishlists", []))
+            prefs["wishlists"] = [w for w in prefs.get("wishlists", []) if w["id"] != wl_id]
+            save_preferences(prefs)
+
+            # Hapus juga riwayat sent_data untuk wishlist ini
+            sent_data = load_sent_data()
+            if wl_id in sent_data:
+                del sent_data[wl_id]
+                save_sent_data(sent_data)
+
+            bot.answer_callback_query(call.id, "Target berhasil dihapus!")
+            cmd_wishlist_dashboard(call.message)
+            return
+
+        elif data == "wl:back":
+            bot.answer_callback_query(call.id)
+            cmd_wishlist_dashboard(call.message)
+            return
+
+        elif data.startswith("wl:view:"):
+            wl_id = data.split(":", 2)[2]
+            prefs = load_preferences()
+            wl = next((w for w in prefs.get("wishlists", []) if w["id"] == wl_id), None)
+            if not wl:
+                bot.answer_callback_query(call.id, "Target tidak ditemukan")
+                return
+
+            bot.answer_callback_query(call.id)
+            status_tag = "🟢 Aktif" if wl.get("is_active", True) else "⏸️ Dijeda"
+            brands = ", ".join(wl.get("brands", [])) if wl.get("brands") else "Semua Brand / Bebas"
+            storages = ", ".join(wl.get("storages", [])) if wl.get("storages") else "Semua Ukuran / Bebas"
+            conditions = ", ".join(wl.get("conditions", [])) if wl.get("conditions") else "Semua Kondisi / Bebas"
+            ram = f"Minimal {wl.get('min_ram_gb', 0)} GB" if wl.get("min_ram_gb", 0) > 0 else "Bebas"
+            p = wl.get("max_price", 0)
+            price_str = f"Maksimal Rp {p:,}".replace(",", ".") if p > 0 else "Bebas / Tanpa Batas"
+
+            text = (
+                f"🎯 <b>DETAIL TARGET: {html.escape(wl['name'])}</b>\n\n"
+                f"• <b>Status:</b> {status_tag}\n"
+                f"• <b>Brand:</b> {brands}\n"
+                f"• <b>Storage:</b> {storages}\n"
+                f"• <b>Kondisi:</b> {conditions}\n"
+                f"• <b>RAM:</b> {ram}\n"
+                f"• <b>Batas Harga:</b> {price_str}\n"
+                f"• <b>Dibuat:</b> {wl.get('created_at', '-')}\n"
+            )
+            markup = InlineKeyboardMarkup()
+            markup.row(
+                InlineKeyboardButton("🔙 Kembali ke Dashboard", callback_data="wl:back"),
+                InlineKeyboardButton("🗑️ Hapus Target", callback_data=f"wl:del_confirm:{wl_id}")
+            )
+            bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=call.message.message_id,
+                text=text,
+                reply_markup=markup
+            )
+            return
+
+        # -------------------------------------------------------------
+        # WIZARD HANDLERS (BRAND, STORAGE, COND, RAM, PRICE)
+        # -------------------------------------------------------------
+        state = user_wizard_state.get(chat_id)
+        if not state:
+            bot.answer_callback_query(call.id, "Sesi telah kedaluwarsa. Silakan ketik /wishlist.")
+            return
+
+        # --- STEP 2: BRAND HANDLERS ---
         if data.startswith("brand:toggle:"):
             brand_name = data.split(":", 2)[2]
             if brand_name in state["brands"]:
@@ -377,8 +530,9 @@ if bot:
                 chat_id=chat_id,
                 message_id=call.message.message_id,
                 text=(
+                    f"🎯 Target: <b>{html.escape(state['name'])}</b>\n"
                     "✅ Brand: <b>Semua Brand / Bebas</b>\n\n"
-                    "<b>Langkah 2/5: Pilih Ukuran Storage (Penyimpanan)</b>\n"
+                    "<b>Langkah 3/6: Pilih Ukuran Storage (Penyimpanan)</b>\n"
                     "<i>(Bisa pilih beberapa sekaligus, lalu klik 'Selesai & Lanjut')</i>"
                 ),
                 reply_markup=build_storage_markup(set())
@@ -393,14 +547,15 @@ if bot:
                 chat_id=chat_id,
                 message_id=call.message.message_id,
                 text=(
+                    f"🎯 Target: <b>{html.escape(state['name'])}</b>\n"
                     f"✅ Brand Dipilih: <b>{b_text}</b>\n\n"
-                    "<b>Langkah 2/5: Pilih Ukuran Storage (Penyimpanan)</b>\n"
+                    "<b>Langkah 3/6: Pilih Ukuran Storage (Penyimpanan)</b>\n"
                     "<i>(Bisa pilih beberapa sekaligus, lalu klik 'Selesai & Lanjut')</i>"
                 ),
                 reply_markup=build_storage_markup(set())
             )
 
-        # --- STEP 2: STORAGE HANDLERS ---
+        # --- STEP 3: STORAGE HANDLERS ---
         elif data.startswith("storage:toggle:"):
             storage_name = data.split(":", 2)[2]
             if storage_name in state["storages"]:
@@ -422,8 +577,9 @@ if bot:
                 chat_id=chat_id,
                 message_id=call.message.message_id,
                 text=(
+                    f"🎯 Target: <b>{html.escape(state['name'])}</b>\n"
                     "✅ Storage: <b>Semua Ukuran / Bebas</b>\n\n"
-                    "<b>Langkah 3/5: Pilih Kondisi Unit HP</b>\n"
+                    "<b>Langkah 4/6: Pilih Kondisi Unit HP</b>\n"
                     "<i>(Bisa pilih beberapa sekaligus, lalu klik 'Selesai & Lanjut')</i>"
                 ),
                 reply_markup=build_condition_markup(set())
@@ -438,14 +594,15 @@ if bot:
                 chat_id=chat_id,
                 message_id=call.message.message_id,
                 text=(
+                    f"🎯 Target: <b>{html.escape(state['name'])}</b>\n"
                     f"✅ Storage Dipilih: <b>{s_text}</b>\n\n"
-                    "<b>Langkah 3/5: Pilih Kondisi Unit HP</b>\n"
+                    "<b>Langkah 4/6: Pilih Kondisi Unit HP</b>\n"
                     "<i>(Bisa pilih beberapa sekaligus, lalu klik 'Selesai & Lanjut')</i>"
                 ),
                 reply_markup=build_condition_markup(set())
             )
 
-        # --- STEP 3: CONDITION HANDLERS ---
+        # --- STEP 4: CONDITION HANDLERS ---
         elif data.startswith("cond:toggle:"):
             cond_name = data.split(":", 2)[2]
             if cond_name in state["conditions"]:
@@ -467,8 +624,9 @@ if bot:
                 chat_id=chat_id,
                 message_id=call.message.message_id,
                 text=(
+                    f"🎯 Target: <b>{html.escape(state['name'])}</b>\n"
                     "✅ Kondisi: <b>Semua Kondisi / Bebas</b>\n\n"
-                    "<b>Langkah 4/5: Pilih Kapasitas RAM Minimal</b>\n"
+                    "<b>Langkah 5/6: Pilih Kapasitas RAM Minimal</b>\n"
                     "<i>(Pilih batas minimal RAM yang Anda inginkan)</i>"
                 ),
                 reply_markup=build_ram_markup()
@@ -483,14 +641,15 @@ if bot:
                 chat_id=chat_id,
                 message_id=call.message.message_id,
                 text=(
+                    f"🎯 Target: <b>{html.escape(state['name'])}</b>\n"
                     f"✅ Kondisi Dipilih: <b>{c_text}</b>\n\n"
-                    "<b>Langkah 4/5: Pilih Kapasitas RAM Minimal</b>\n"
+                    "<b>Langkah 5/6: Pilih Kapasitas RAM Minimal</b>\n"
                     "<i>(Pilih batas minimal RAM yang Anda inginkan)</i>"
                 ),
                 reply_markup=build_ram_markup()
             )
 
-        # --- STEP 4: RAM HANDLERS ---
+        # --- STEP 5: RAM HANDLERS ---
         elif data.startswith("ram:"):
             ram_val = int(data.split(":")[1])
             state["min_ram_gb"] = ram_val
@@ -501,14 +660,15 @@ if bot:
                 chat_id=chat_id,
                 message_id=call.message.message_id,
                 text=(
+                    f"🎯 Target: <b>{html.escape(state['name'])}</b>\n"
                     f"✅ RAM: <b>{ram_text}</b>\n\n"
-                    "<b>Langkah 5/5: Pilih Batas Harga Maksimal</b>\n"
+                    "<b>Langkah 6/6: Pilih Batas Harga Maksimal</b>\n"
                     "<i>Pilih nominal preset atau klik 'Ketik Manual Bebas'</i>"
                 ),
                 reply_markup=build_price_markup()
             )
 
-        # --- STEP 5: PRICE HANDLERS ---
+        # --- STEP 6: PRICE HANDLERS ---
         elif data.startswith("price:"):
             price_code = data.split(":")[1]
             if price_code == "manual":
@@ -518,6 +678,7 @@ if bot:
                     chat_id=chat_id,
                     message_id=call.message.message_id,
                     text=(
+                        f"🎯 Target: <b>{html.escape(state['name'])}</b>\n\n"
                         "✏️ <b>Ketik Batas Harga Maksimal</b>\n\n"
                         "Silakan ketik angka batas harga maksimal yang Anda inginkan langsung di chat.\n"
                         "Contoh: <code>1250000</code> atau <code>1.250.000</code>"
@@ -526,23 +687,45 @@ if bot:
             else:
                 price_val = int(price_code)
                 state["max_price"] = price_val
-                finish_wizard(chat_id, state)
-                bot.answer_callback_query(call.id, "Preferensi Tersimpan!")
+                finish_add_wishlist_wizard(chat_id, state)
+                bot.answer_callback_query(call.id, "Target Incaran Tersimpan!")
 
 
     @bot.message_handler(func=lambda msg: True)
     def handle_text_messages(message):
-        """Menangani input teks manual, terutama saat input harga manual."""
+        """Menangani input teks (nama label target & input harga manual)."""
         chat_id = str(message.chat.id)
         state = user_wizard_state.get(chat_id)
 
-        if state and state.get("step") == "waiting_price_input":
+        if not state:
+            return
+
+        step = state.get("step")
+
+        # Step 1: Input nama target
+        if step == "waiting_name":
+            target_name = message.text.strip()
+            if not target_name:
+                bot.reply_to(message, "⚠️ Nama target tidak boleh kosong. Silakan ketik nama target incaran Anda:")
+                return
+
+            state["name"] = target_name
+            state["step"] = "brand"
+
+            text = (
+                f"🎯 <b>Target: {html.escape(target_name)}</b>\n\n"
+                "<b>Langkah 2/6: Pilih Brand HP</b>\n"
+                "<i>(Bisa pilih lebih dari satu dengan menekan tombol, lalu klik 'Selesai & Lanjut')</i>"
+            )
+            bot.send_message(chat_id, text, reply_markup=build_brand_markup(set()))
+
+        # Step 6: Input harga manual
+        elif step == "waiting_price_input":
             raw_text = message.text
             digits = re.sub(r"[^\d]", "", raw_text)
             if digits and int(digits) > 0:
-                parsed_price = int(digits)
-                state["max_price"] = parsed_price
-                finish_wizard(chat_id, state)
+                state["max_price"] = int(digits)
+                finish_add_wishlist_wizard(chat_id, state)
             else:
                 bot.reply_to(
                     message,
@@ -550,46 +733,48 @@ if bot:
                 )
 
 
-def finish_wizard(chat_id, state):
-    """Menyimpan hasil kuesioner ke user_preferences.json dan mengirim ringkasan."""
-    prefs = {
-        "is_configured": True,
+def finish_add_wishlist_wizard(chat_id, state):
+    """Menyimpan wishlist baru ke user_preferences.json dan memulai scan awal instan."""
+    prefs = load_preferences()
+    new_wl_id = f"wl_{int(time.time())}"
+
+    new_wl = {
+        "id": new_wl_id,
+        "name": state.get("name", f"Target {len(prefs.get('wishlists', [])) + 1}"),
         "is_active": True,
         "brands": sorted(list(state["brands"])),
         "storages": sorted(list(state["storages"])),
         "conditions": sorted(list(state["conditions"])),
         "min_ram_gb": state.get("min_ram_gb", 0),
-        "max_price": state.get("max_price", 1000000)
+        "max_price": state.get("max_price", 1000000),
+        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
+
+    prefs.setdefault("wishlists", []).append(new_wl)
     save_preferences(prefs)
     state["step"] = "completed"
 
-    brands_str = ", ".join(prefs["brands"]) if prefs["brands"] else "Semua Brand / Bebas"
-    storages_str = ", ".join(prefs["storages"]) if prefs["storages"] else "Semua Ukuran / Bebas"
-    conditions_str = ", ".join(prefs["conditions"]) if prefs["conditions"] else "Semua Kondisi / Bebas"
-    ram_str = f"Minimal {prefs['min_ram_gb']} GB" if prefs["min_ram_gb"] > 0 else "Bebas"
-    price_str = f"Maksimal Rp {prefs['max_price']:,}".replace(",", ".") if prefs["max_price"] > 0 else "Bebas / Tanpa Batas"
+    brands_str = ", ".join(new_wl["brands"]) if new_wl["brands"] else "Semua Brand / Bebas"
+    storages_str = ", ".join(new_wl["storages"]) if new_wl["storages"] else "Semua Ukuran / Bebas"
+    conditions_str = ", ".join(new_wl["conditions"]) if new_wl["conditions"] else "Semua Kondisi / Bebas"
+    ram_str = f"Minimal {new_wl['min_ram_gb']} GB" if new_wl["min_ram_gb"] > 0 else "Bebas"
+    price_str = f"Maksimal Rp {new_wl['max_price']:,}".replace(",", ".") if new_wl["max_price"] > 0 else "Bebas / Tanpa Batas"
 
     summary_text = (
-        "🎉 <b>PREFERENSI PENCARIAN BERHASIL DISIMPAN!</b>\n\n"
-        "📋 <b>Kriteria HP yang Dipantau:</b>\n"
+        f"🎉 <b>TARGET INCATAN BARU BERHASIL DISIMPAN!</b>\n\n"
+        f"🏷️ <b>Nama Target:</b> {html.escape(new_wl['name'])}\n"
         f"• <b>Brand:</b> {brands_str}\n"
         f"• <b>Storage:</b> {storages_str}\n"
         f"• <b>Kondisi:</b> {conditions_str}\n"
         f"• <b>RAM:</b> {ram_str}\n"
         f"• <b>Batas Harga:</b> {price_str}\n\n"
-        "🚀 <b>Monitoring Otomatis Aktif!</b>\n"
-        f"Bot akan memantau Maujual.com setiap {INTERVAL_MENIT} menit dan hanya mengirim notifikasi jika stok HP yang cocok ditemukan.\n\n"
-        "💡 <b>Perintah yang dapat Anda gunakan:</b>\n"
-        "• /status - Cek status monitoring & filter aktif\n"
-        "• /filter - Ubah kriteria pencarian kapan saja\n"
-        "• /stop - Berhenti menerima notifikasi\n"
-        "• /resume - Mengaktifkan kembali monitoring"
+        "🔎 <b>Memulai Scan Awal...</b>\n"
+        "Bot sedang memeriksa seluruh katalog Maujual.com untuk mencari HP ready yang cocok dengan target ini. Harap tunggu sebentar..."
     )
     bot.send_message(chat_id, summary_text)
 
-    # Jalankan pengecekan pertama secara asynchronous agar langsung memeriksa kriteria baru
-    threading.Thread(target=job_check_stok, daemon=True).start()
+    # Jalankan scan awal seketika di background thread khusus wishlist baru ini
+    threading.Thread(target=scan_single_wishlist, args=(new_wl,), daemon=True).start()
 
 
 # ==============================================================================
@@ -684,20 +869,20 @@ def get_product_details(product_url):
 # ==============================================================================
 # FILTER MATCHING ENGINE
 # ==============================================================================
-def match_product_filters(product_title, product_price_str, specs, raw_ready_variants, prefs):
+def match_product_filters(product_title, product_price_str, specs, raw_ready_variants, filter_criteria):
     """
-    Mengecek apakah produk memenuhi SEMUA filter preferensi pengguna.
+    Mengecek apakah produk memenuhi SEMUA filter kriteria suatu wishlist.
     Mengembalikan (is_match, matched_ready_variants).
     """
     # 1. Filter Brand
-    selected_brands = prefs.get("brands", [])
+    selected_brands = filter_criteria.get("brands", [])
     if selected_brands:
         title_lower = product_title.lower()
         if not any(b.lower() in title_lower for b in selected_brands):
             return False, []
 
     # 2. Filter RAM
-    min_ram = prefs.get("min_ram_gb", 0)
+    min_ram = filter_criteria.get("min_ram_gb", 0)
     ram = specs.get("ram", "-")
     if min_ram > 0 and ram != "-":
         ram_numbers = [int(n) for n in re.findall(r"(\d+)\s*gb", ram, re.I)]
@@ -706,9 +891,9 @@ def match_product_filters(product_title, product_price_str, specs, raw_ready_var
                 return False, []
 
     # 3. Filter Varian Ready (Storage, Kondisi, Harga Maksimal)
-    selected_storages = [s.lower() for s in prefs.get("storages", [])]
-    selected_conditions = [c.lower() for c in prefs.get("conditions", [])]
-    max_price = prefs.get("max_price", 0)
+    selected_storages = [s.lower() for s in filter_criteria.get("storages", [])]
+    selected_conditions = [c.lower() for c in filter_criteria.get("conditions", [])]
+    max_price = filter_criteria.get("max_price", 0)
 
     matched_variants = []
     for var in raw_ready_variants:
@@ -740,12 +925,12 @@ def match_product_filters(product_title, product_price_str, specs, raw_ready_var
 
 
 # ==============================================================================
-# TELEGRAM NOTIFICATION SENDER (DENGAN GAMBAR HP & SPEK LENGKAP)
+# TELEGRAM NOTIFICATION SENDER
 # ==============================================================================
-def send_telegram_notification(title, price, product_url, specs, matched_variants, image_url):
+def send_telegram_notification(title, price, product_url, specs, matched_variants, image_url, target_label="", is_initial_scan=False):
     """
     Mengirim pesan notifikasi lengkap + Foto HP ke Telegram.
-    User dapat melihat spesifikasi lengkap tanpa perlu membuka web Maujual.
+    Mencantumkan label nama target wishlist yang cocok.
     """
     if not TELEGRAM_TOKEN or not CHAT_ID:
         logger.warning("TELEGRAM_TOKEN atau CHAT_ID belum disetel.")
@@ -754,9 +939,11 @@ def send_telegram_notification(title, price, product_url, specs, matched_variant
     safe_title = html.escape(title)
     safe_price = html.escape(price)
     safe_url = html.escape(product_url)
+    target_header = f"🎯 <b>TARGET: {html.escape(target_label)}</b>\n" if target_label else ""
+    initial_tag = "⚡ <i>[Hasil Scan Awal Wishlist Baru]</i>\n" if is_initial_scan else ""
 
     lines = [
-        "🚨 <b>ADA STOK BARU MASUK!</b> 🚨",
+        f"{target_header}{initial_tag}🚨 <b>ADA STOK COCOK DITEMUKAN!</b> 🚨",
         f"📱 <b>{safe_title}</b>",
         f"💰 <b>{safe_price}</b>",
         "━━━━━━━━━━━━━━━━━━━━━",
@@ -834,7 +1021,6 @@ def send_telegram_notification(title, price, product_url, specs, matched_variant
 
     # 1. Coba kirim Foto HP terlebih dahulu jika URL gambar tersedia
     if image_url:
-        # Jika teks muat di caption Telegram (maksimal 1024 karakter)
         if len(full_text) <= 1024:
             try:
                 photo_api = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
@@ -846,19 +1032,19 @@ def send_telegram_notification(title, price, product_url, specs, matched_variant
                 }
                 resp = requests.post(photo_api, json=payload, timeout=15)
                 if resp.status_code == 200:
-                    logger.info(f"✅ Notifikasi Foto & Spek Lengkap terkirim untuk: {title}")
+                    logger.info(f"✅ Notifikasi Foto & Spek terkirim untuk: {title} ({target_label})")
                     return True
                 else:
-                    logger.warning(f"sendPhoto gabungan gagal ({resp.status_code}): {resp.text}. Mengirim foto & teks terpisah.")
+                    logger.warning(f"sendPhoto gabungan gagal ({resp.status_code}): {resp.text}")
             except Exception as e:
-                logger.warning(f"Error sendPhoto: {e}. Mengirim teks saja.")
+                logger.warning(f"Error sendPhoto: {e}")
 
-        # Jika teks panjang (> 1024 karakter) atau sendPhoto gabungan gagal:
-        # Kirim foto terlebih dahulu dengan caption singkat, lalu kirim teks spek lengkap
+        # Jika caption > 1024 karakter, kirim foto dengan caption ringkas lalu kirim teks spek
         try:
             photo_api = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
             short_caption = (
-                f"🚨 <b>ADA STOK BARU MASUK!</b> 🚨\n"
+                f"{target_header}{initial_tag}"
+                f"🚨 <b>ADA STOK COCOK DITEMUKAN!</b> 🚨\n"
                 f"📱 <b>{safe_title}</b>\n"
                 f"💰 <b>{safe_price}</b>"
             )
@@ -869,7 +1055,7 @@ def send_telegram_notification(title, price, product_url, specs, matched_variant
                 "parse_mode": "HTML"
             }, timeout=15)
         except Exception as e:
-            logger.warning(f"Gagal mengirim foto HP terpisah: {e}")
+            logger.warning(f"Gagal kirim foto terpisah: {e}")
 
     # 2. Kirim pesan teks detail spesifikasi lengkap
     try:
@@ -882,7 +1068,7 @@ def send_telegram_notification(title, price, product_url, specs, matched_variant
         }
         resp = requests.post(msg_api, json=payload, timeout=15)
         if resp.status_code == 200:
-            logger.info(f"✅ Pesan detail spesifikasi lengkap terkirim untuk: {title}")
+            logger.info(f"✅ Pesan detail spesifikasi terkirim untuk: {title} ({target_label})")
             return True
         else:
             logger.error(f"❌ Telegram API Error ({resp.status_code}): {resp.text}")
@@ -975,77 +1161,146 @@ def scrape_maujual(max_price=0):
 
 
 # ==============================================================================
-# MAIN JOB RUNNER
+# SCAN SINGLE WISHLIST (SCAN AWAL INSTAN)
 # ==============================================================================
-def job_check_stok():
-    """Tugas berkala: scrape produk, cek riwayat JSON, dan filter sesuai preferensi."""
-    logger.info("=== [MULAI PENGECEKAN STOK] ===")
+def scan_single_wishlist(wishlist):
+    """
+    Melakukan scan awal seketika begitu sebuah wishlist baru dibuat.
+    Mengirimkan semua HP yang saat ini ready di Maujual yang cocok dengan kriteria wishlist tersebut.
+    """
+    wl_id = wishlist["id"]
+    wl_name = wishlist.get("name", "Target")
+    max_p = wishlist.get("max_price", 0)
 
-    prefs = load_preferences()
-
-    # 1. Cek apakah pengguna sudah mengonfigurasi preferensi melalui /start
-    if not prefs.get("is_configured", False):
-        logger.info("Bot belum dikonfigurasi melalui Telegram (/start). Pengecekan stok dilewati.")
-        logger.info("=== [PENGECEKAN SELESAI] ===\n")
-        return
-
-    # 2. Cek apakah monitoring aktif atau sedang di-stop oleh pengguna
-    if not prefs.get("is_active", True):
-        logger.info("Monitoring sedang dinonaktifkan oleh pengguna (/stop). Pengecekan stok dilewati.")
-        logger.info("=== [PENGECEKAN SELESAI] ===\n")
-        return
-
-    sent_urls = load_sent_urls()
-    max_p = prefs.get("max_price", 0)
+    logger.info(f"Memulai scan awal instan untuk target baru: '{wl_name}' ({wl_id})")
     products = scrape_maujual(max_price=max_p)
 
-    if not products:
-        logger.info("Tidak ada data produk yang didapat pada iterasi ini.")
-        logger.info("=== [PENGECEKAN SELESAI] ===\n")
-        return
+    sent_data = load_sent_data()
+    sent_set = sent_data.get(wl_id, set())
 
-    new_notified = 0
+    found_count = 0
     for item in products:
         p_url = item["url"]
         p_title = item["title"]
         p_price = item["price"]
 
-        if p_url in sent_urls:
-            logger.info(f"[SKIP SUDAH ADA] {p_title} ({p_price})")
+        if p_url in sent_set:
             continue
 
-        # Ambil spesifikasi lengkap produk, varian ready, dan foto HP
         specs, raw_ready_variants, image_url = get_product_details(p_url)
-
-        # Cek apakah produk & variannya cocok dengan preferensi filter pengguna
         is_match, matched_variants = match_product_filters(
-            p_title, p_price, specs, raw_ready_variants, prefs
+            p_title, p_price, specs, raw_ready_variants, wishlist
         )
 
-        if not is_match:
-            logger.info(f"[TIDAK COCOK FILTER] {p_title} ({p_price}) - Dilewati.")
-            sent_urls.add(p_url)
-            save_sent_urls(sent_urls)
+        sent_set.add(p_url)
+
+        if is_match:
+            found_count += 1
+            logger.info(f"[SCAN AWAL COCOK] {p_title} ({p_price}) -> Target '{wl_name}'")
+            if TELEGRAM_TOKEN and CHAT_ID:
+                send_telegram_notification(
+                    p_title, p_price, p_url, specs, matched_variants, image_url,
+                    target_label=wl_name, is_initial_scan=True
+                )
+            time.sleep(1)
+
+    sent_data[wl_id] = sent_set
+    save_sent_data(sent_data)
+
+    if found_count == 0:
+        logger.info(f"Scan awal selesai: tidak ada stok ready yang cocok saat ini untuk '{wl_name}'.")
+        if TELEGRAM_TOKEN and CHAT_ID:
+            try:
+                bot.send_message(
+                    CHAT_ID,
+                    f"🔍 <b>Laporan Scan Awal untuk Target:</b> <code>{html.escape(wl_name)}</code>\n\n"
+                    "Saat ini belum ada stok ready di Maujual yang cocok dengan kriteria ini.\n"
+                    "Bot akan terus memantau otomatis setiap 15 menit dan memberi tahu Anda begitu stok masuk! 🚀"
+                )
+            except Exception as e:
+                logger.warning(f"Gagal mengirim pesan laporan scan awal: {e}")
+    else:
+        logger.info(f"Scan awal selesai: {found_count} produk cocok terkirim untuk '{wl_name}'.")
+
+
+# ==============================================================================
+# MAIN JOB RUNNER (MULTI-WISHLIST SCHEDULER)
+# ==============================================================================
+def job_check_stok():
+    """Tugas berkala: scrape produk, cek riwayat per-wishlist, dan kirim notifikasi terpisah."""
+    logger.info("=== [MULAI PENGECEKAN STOK BERKALA] ===")
+
+    prefs = load_preferences()
+    wishlists = prefs.get("wishlists", [])
+    active_wishlists = [w for w in wishlists if w.get("is_active", True)]
+
+    if not active_wishlists:
+        logger.info("Tidak ada wishlist aktif saat ini. Pengecekan stok dilewati.")
+        logger.info("=== [PENGECEKAN SELESAI] ===\n")
+        return
+
+    # Tentukan query harga maksimal tertinggi di antara semua wishlist aktif
+    highest_max_price = 0
+    for w in active_wishlists:
+        p = w.get("max_price", 0)
+        if p == 0:
+            highest_max_price = 0
+            break
+        if p > highest_max_price:
+            highest_max_price = p
+
+    products = scrape_maujual(max_price=highest_max_price)
+    if not products:
+        logger.info("Tidak ada data produk yang didapat pada iterasi ini.")
+        logger.info("=== [PENGECEKAN SELESAI] ===\n")
+        return
+
+    sent_data = load_sent_data()
+    new_notified = 0
+
+    for item in products:
+        p_url = item["url"]
+        p_title = item["title"]
+        p_price = item["price"]
+
+        # Filter wishlist mana saja yang belum pernah memproses URL ini
+        candidate_wishlists = [
+            w for w in active_wishlists
+            if p_url not in sent_data.get(w["id"], set())
+        ]
+
+        if not candidate_wishlists:
             continue
 
-        # Jika cocok, kirim notifikasi foto + spek lengkap
-        new_notified += 1
-        logger.info(f"[PRODUK COCOK DITEMUKAN] {p_title} - {p_price} -> {p_url}")
+        # Ambil spesifikasi detail produk (sekali per produk untuk efisiensi)
+        specs, raw_ready_variants, image_url = get_product_details(p_url)
 
-        if TELEGRAM_TOKEN and CHAT_ID:
-            success = send_telegram_notification(
-                p_title, p_price, p_url, specs, matched_variants, image_url
+        # Evaluasi kecocokan untuk setiap candidate wishlist secara independen
+        for wl in candidate_wishlists:
+            wl_id = wl["id"]
+            wl_name = wl.get("name", "Target")
+
+            is_match, matched_variants = match_product_filters(
+                p_title, p_price, specs, raw_ready_variants, wl
             )
-            if success:
-                sent_urls.add(p_url)
-                save_sent_urls(sent_urls)
-            else:
-                logger.warning(f"Gagal mengirim notifikasi untuk {p_url}, akan dicoba lagi.")
-        else:
-            sent_urls.add(p_url)
-            save_sent_urls(sent_urls)
 
-        time.sleep(1)
+            # Tandai produk sudah dievaluasi untuk wishlist ini agar tidak berulang
+            if wl_id not in sent_data:
+                sent_data[wl_id] = set()
+            sent_data[wl_id].add(p_url)
+
+            if is_match:
+                new_notified += 1
+                logger.info(f"[PRODUK COCOK] {p_title} ({p_price}) -> Target '{wl_name}'")
+                if TELEGRAM_TOKEN and CHAT_ID:
+                    send_telegram_notification(
+                        p_title, p_price, p_url, specs, matched_variants, image_url,
+                        target_label=wl_name
+                    )
+                time.sleep(1)
+
+        # Simpan database per-wishlist
+        save_sent_data(sent_data)
 
     logger.info(f"Pengecekan selesai. Notifikasi baru terkirim: {new_notified}")
     logger.info("=== [PENGECEKAN SELESAI] ===\n")
@@ -1065,7 +1320,7 @@ def start_scheduler_loop():
 
 def main():
     print("=" * 65)
-    print("       MAUJUAL.COM HP SCRAPER & INTERACTIVE TELEGRAM BOT")
+    print("       MAUJUAL.COM HP SCRAPER & MULTI-WISHLIST BOT")
     print(f"       Jadwal Scheduler: Setiap {INTERVAL_MENIT} menit")
     print("=" * 65)
 
@@ -1085,8 +1340,8 @@ def main():
     sched_thread = threading.Thread(target=start_scheduler_loop, daemon=True)
     sched_thread.start()
 
-    logger.info("Bot Telegram siap! Silakan buka Telegram Anda dan ketik /start.")
-    print("\n👉 Buka Telegram dan kirim perintah: /start")
+    logger.info("Bot Telegram siap! Silakan buka Telegram Anda dan ketik /wishlist.")
+    print("\n👉 Buka Telegram dan kirim perintah: /wishlist")
     print("👉 Tekan Ctrl+C di terminal ini jika ingin menghentikan bot.\n")
 
     try:

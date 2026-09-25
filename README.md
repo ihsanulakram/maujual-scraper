@@ -1,27 +1,36 @@
-# 📱 Maujual.com HP Scraper & Interactive Telegram Bot
+# 📱 Maujual.com HP Scraper & Multi-Wishlist Telegram Bot
 
-Bot Telegram pintar dan otomatis untuk mencari stok HP bekas berkualitas di [shop.maujual.com](https://shop.maujual.com). Dilengkapi fitur kuesioner interaktif (`/start`), multi-select kriteria (Brand, Storage, Kondisi, RAM, Harga bebas), kontrol stop/resume, serta notifikasi instan via Telegram.
+Bot Telegram pintar dan otomatis untuk berburu stok HP bekas berkualitas di [shop.maujual.com](https://shop.maujual.com). Dilengkapi **Sistem Multi-Wishlist** (bisa memantau banyak target incaran sekaligus dengan kriteria berbeda), **Foto Produk Asli**, **16 Parameter Spesifikasi Lengkap**, serta otomatisasi GitHub Actions setiap 15 menit.
 
 ---
 
-## 🚀 Fitur Utama
-1. **Interactive Onboarding (`/start`)**:
-   - Bot tidak langsung scan sebelum user mengonfigurasi kriteria.
-   - Kuesioner bertahap dengan tombol checklist `[✓]` di Telegram.
-2. **Multi-Select Checkbox**:
-   - **Brand**: Pilih satu atau beberapa brand (Samsung, Xiaomi, Oppo, Vivo, Realme, iPhone, Infinix, atau Bebas).
-   - **Storage**: Pilih beberapa ukuran (32GB, 64GB, 128GB, 256GB, atau Bebas).
-   - **Kondisi Unit**: Pilih kondisi yang diinginkan (Mulus, Standar, Ekonomis, atau Bebas).
-3. **RAM & Custom Price Input**:
-   - Filter kapasitas minimal RAM (Bebas, 3GB, 4GB, 6GB, 8GB+).
-   - Batas harga fleksibel: Preset atau **Ketik Manual Bebas** (misal: `1250000` atau `1.250.000`).
-4. **Hanya Varian Ready Stock**:
-   - Hanya menampilkan varian yang benar-benar tersedia stoknya dan cocok dengan kriteria Anda.
-5. **Kontrol Monitoring (`/stop` & `/resume`)**:
-   - Berhenti menerima notifikasi kapan saja dengan `/stop`.
-   - Mengaktifkan kembali dengan `/resume`.
-6. **Database Anti-Spam (`sent_jackpot.json`)**:
-   - Tidak akan mengirim produk yang sama dua kali.
+## 🚀 Fitur Unggulan
+
+1. **🎯 Sistem Multi-Wishlist (`/wishlist`)**:
+   - Pasang beberapa incaran HP berbeda sekaligus (contoh: *"HP Gaming"*, *"Incaran iPhone"*, *"HP Cadangan Murah"*).
+   - Setiap incaran memiliki kriteria mandiri (Brand, Storage, Kondisi, RAM, dan Harga).
+   - Notifikasi Telegram mencantumkan nama target incaran dengan jelas (`🎯 TARGET: [Nama Target]`).
+
+2. **📸 Foto HP & 16 Spesifikasi Lengkap**:
+   - Mengambil foto unit asli langsung dari katalog Maujual via API `sendPhoto`.
+   - Menampilkan spesifikasi teknis lengkap: Chipset, RAM, OS, Baterai, Charging, Layar, Kamera Utama & Selfie, NFC, USB, SIM, Berat, dan Dimensi.
+   - User tidak perlu lagi membuka web Maujual hanya untuk mengecek spek!
+
+3. **⚡ Scan Awal Instan**:
+   - Begitu sebuah target incaran baru ditambahkan via Telegram, bot langsung melakukan scan seketika ke seluruh katalog untuk melaporkan stok ready saat ini.
+
+4. **🎛️ Dashboard Interaktif Telegram**:
+   - Menu tombol untuk mengelola semua target incaran:
+     - `[➕ Tambah Incaran Baru]`
+     - `[👁️ Lihat Detail Kriteria]`
+     - `[⏸️ Jeda / ▶️ Resume]`
+     - `[🗑️ Hapus Target]`
+
+5. **🛡️ Anti-Spam Cerdas Per-Wishlist**:
+   - Melacak riwayat produk terkirim per-target incaran, sehingga tidak ada spam pesan dobel untuk target yang sama.
+
+6. **☁️ GitHub Actions 15 Menit Unlimited**:
+   - Berjalan otomatis di cloud GitHub Actions setiap 15 menit tanpa membebani komputer Anda.
 
 ---
 
@@ -29,49 +38,45 @@ Bot Telegram pintar dan otomatis untuk mencari stok HP bekas berkualitas di [sho
 
 | Perintah | Deskripsi |
 |---|---|
-| `/start` | Memulai kuesioner awal untuk menentukan kriteria HP yang dicari |
-| `/filter` | Mengubah kriteria pencarian (Brand, Storage, Kondisi, RAM, Harga) |
-| `/status` | Melihat status bot (Aktif/Nonaktif) & filter yang sedang terpasang |
-| `/stop` | Menonaktifkan notifikasi (tidak menerima notifikasi lagi) |
-| `/resume` | Mengaktifkan kembali notifikasi |
-| `/help` | Menampilkan panduan bantuan |
+| `/wishlist` | Membuka Dashboard Multi-Wishlist (lihat, jeda/resume, dan hapus target) |
+| `/tambah` | Shortcut membuat target incaran HP baru |
+| `/status` | Cek status monitoring dan daftar target aktif |
+| `/help` | Menampilkan panduan penggunaan bot |
 
 ---
 
 ## 📋 Cara Penggunaan
 
-### 1. Menjalankan Bot di Komputer / Termux
-Cukup jalankan file launcher:
-- **Windows**: Double-click `run_scraper.bat`, atau:
+### 1. Menjalankan Bot Interaktif di Komputer
+Cukup double-click file launcher:
+- **Windows**: Jalankan `run_scraper.bat`, atau:
   ```powershell
   python scraper_maujual.py
   ```
-- **Android (Termux)** / **Linux**:
-  ```bash
-  python scraper_maujual.py
-  ```
 
-### 2. Atur Kriteria di Telegram
-1. Buka bot Anda di aplikasi Telegram.
-2. Kirim perintah: `/start`
-3. Tekan tombol-tombol pilihan di Telegram sesuai HP idaman Anda:
-   - Pilih Brand (bisa pilih beberapa, lalu klik *Selesai & Lanjut*)
-   - Pilih Storage (bisa pilih beberapa)
-   - Pilih Kondisi (Mulus, Standar, Ekonomis)
-   - Pilih Minimal RAM
-   - Pilih Batas Harga (atau ketik nominal bebas di chat, misal: `1250000`)
-4. Bot akan mengonfirmasi bahwa monitoring telah aktif!
+### 2. Kelola Target Incaran di Telegram
+1. Buka bot Anda di Telegram, kirim perintah: `/wishlist`
+2. Klik tombol **➕ Tambah Incaran Baru**
+3. Masukkan nama incaran Anda (contoh: `HP Gaming Murah`)
+4. Pilih kriteria melalui tombol checklist:
+   - **Brand**: Samsung, Xiaomi, Oppo, Vivo, Realme, iPhone, Infinix, atau Bebas
+   - **Storage**: 32GB, 64GB, 128GB, 256GB, atau Bebas
+   - **Kondisi**: Mulus, Standar, Ekonomis, atau Bebas
+   - **RAM**: Bebas, Min 3GB, Min 4GB, Min 6GB, Min 8GB+
+   - **Batas Budget**: Preset atau ketik nominal bebas di chat (contoh: `1250000`)
+5. Bot akan langsung menyimpan target Anda dan melakukan scan awal seketika!
 
 ---
 
-## 📁 Struktur File
+## 📁 Struktur File Proyek
 ```
 maujual-scraper/
-├── .github/workflows/scraper.yml  # Otomatisasi GitHub Actions (30 menit)
-├── scraper_maujual.py             # Script utama bot & scraper
+├── .github/workflows/scraper.yml  # Otomatisasi GitHub Actions (setiap 15 menit)
+├── scraper_maujual.py             # Script utama bot, scraper, dan multi-wishlist engine
 ├── run_scraper.bat                # Launcher cepat Windows
 ├── requirements.txt               # Daftar pustaka Python
-├── sent_jackpot.json              # Database riwayat produk terkirim
-├── user_preferences.json          # Pengaturan kriteria filter pengguna
-└── README.md                      # Dokumentasi ini
+├── sent_jackpot.json              # Database riwayat produk terkirim per-wishlist
+├── user_preferences.json          # Database daftar multi-wishlist pengguna
+├── .env.example                   # Template konfigurasi environment variables
+└── README.md                      # Dokumentasi proyek
 ```

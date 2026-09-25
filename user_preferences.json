@@ -1,9 +1,15 @@
 {
-  "is_configured": true,
-  "is_active": true,
-  "brands": [],
-  "storages": [],
-  "conditions": [],
-  "min_ram_gb": 4,
-  "max_price": 1000000
+  "wishlists": [
+    {
+      "id": "wl_1790356406",
+      "name": "Target Utama",
+      "is_active": true,
+      "brands": [],
+      "storages": [],
+      "conditions": [],
+      "min_ram_gb": 4,
+      "max_price": 1000000,
+      "created_at": "2026-09-26 00:13:26"
+    }
+  ]
 }
