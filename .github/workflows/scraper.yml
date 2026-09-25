@@ -1,0 +1,44 @@
+name: Maujual Stock Scraper
+
+on:
+  schedule:
+    # Berjalan otomatis setiap 15 menit (format cron UTC)
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+    # Memungkinkan untuk dijalankan secara manual dari tombol 'Run workflow' di GitHub
+
+permissions:
+  contents: write  # Izin untuk menyimpan kembali sent_jackpot.json ke repositori
+
+jobs:
+  scrape-and-notify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Scraper
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+        run: |
+          python scraper_maujual.py --once
+
+      - name: Commit and Push Database and Preferences
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add sent_jackpot.json user_preferences.json
+          git diff --staged --quiet || (git commit -m "chore: update database and preferences [skip ci]" && git push)

@@ -1,0 +1,9 @@
+{
+  "is_configured": true,
+  "is_active": true,
+  "brands": [],
+  "storages": [],
+  "conditions": [],
+  "min_ram_gb": 4,
+  "max_price": 1000000
+}
