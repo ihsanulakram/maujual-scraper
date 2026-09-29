@@ -1084,82 +1084,111 @@ def send_telegram_notification(title, price, product_url, specs, matched_variant
 # WEB SCRAPING FUNCTION
 # ==============================================================================
 def scrape_maujual(max_price=0):
-    """Scrape halaman katalog Maujual dengan filter harga dinamis."""
-    if max_price > 0:
-        target_url = (
-            f"https://shop.maujual.com/collections/hp?"
-            f"sort_by=created-descending&filter.v.price.gte=1&filter.v.price.lte={max_price}"
-        )
-    else:
-        target_url = "https://shop.maujual.com/collections/hp?sort_by=created-descending"
+    """
+    Scrape SEMUA halaman katalog Maujual dengan filter harga dinamis.
+    Mendukung pagination otomatis: terus mengambil halaman berikutnya
+    sampai tidak ada produk baru yang ditemukan.
+    """
+    seen_urls = set()
+    all_products = []
+    page = 1
+    MAX_PAGES = 20  # Safety cap agar tidak looping selamanya jika ada bug pagination
 
-    logger.info(f"Melakukan request katalog ke: {target_url}")
-    try:
-        response = requests.get(target_url, headers=HEADERS, timeout=20)
-        response.raise_for_status()
-    except requests.RequestException as e:
-        logger.error(f"Gagal mengambil halaman web: {e}")
-        return []
+    while page <= MAX_PAGES:
+        if max_price > 0:
+            page_url = (
+                f"https://shop.maujual.com/collections/hp?"
+                f"sort_by=created-descending&filter.p.t.category=el-4-8-5"
+                f"&filter.v.price.gte=1&filter.v.price.lte={max_price}&page={page}"
+            )
+        else:
+            page_url = (
+                f"https://shop.maujual.com/collections/hp?"
+                f"sort_by=created-descending&filter.p.t.category=el-4-8-5&page={page}"
+            )
 
-    products = []
-    try:
-        soup = BeautifulSoup(response.text, "html.parser")
-        cards = soup.select("li.product-card")
-        if not cards:
-            cards = soup.select("[class*='product-card']")
+        logger.info(f"Melakukan request katalog halaman {page}: {page_url}")
+        try:
+            response = requests.get(page_url, headers=HEADERS, timeout=20)
+            response.raise_for_status()
+        except requests.RequestException as e:
+            logger.error(f"Gagal mengambil halaman {page}: {e}")
+            break
 
-        for card in cards:
-            try:
-                card_classes = card.get("class", [])
-                if "placeholder-product" in card_classes:
+        try:
+            soup = BeautifulSoup(response.text, "html.parser")
+            cards = soup.select("li.product-card")
+            if not cards:
+                cards = soup.select("[class*='product-card']")
+
+            page_products = []
+            for card in cards:
+                try:
+                    card_classes = card.get("class", [])
+                    if "placeholder-product" in card_classes:
+                        continue
+
+                    title = ""
+                    product_url = ""
+
+                    title_elem = card.find("h3")
+                    if title_elem:
+                        a_tag = title_elem.find("a")
+                        if a_tag:
+                            title = a_tag.get_text(strip=True)
+                            raw_href = a_tag.get("href", "")
+                            if raw_href:
+                                product_url = urljoin("https://shop.maujual.com", raw_href).split("?")[0]
+                        else:
+                            title = title_elem.get_text(strip=True)
+
+                    if not product_url:
+                        fig_a = card.select_one("figure a")
+                        if fig_a and fig_a.get("href"):
+                            raw_href = fig_a.get("href")
+                            if "/products/" in raw_href:
+                                product_url = urljoin("https://shop.maujual.com", raw_href).split("?")[0]
+                                if not title and fig_a.get("aria-label"):
+                                    title = fig_a.get("aria-label")
+
+                    if not product_url or not title or title.lower() == "product title":
+                        continue
+
+                    # Lewati duplikat antar halaman
+                    if product_url in seen_urls:
+                        continue
+                    seen_urls.add(product_url)
+
+                    price = "Harga tidak tersedia"
+                    price_elem = card.select_one(".price, [class*='price']")
+                    if price_elem:
+                        price = price_elem.get_text(" ", strip=True)
+
+                    page_products.append({
+                        "title": title,
+                        "price": price,
+                        "url": product_url
+                    })
+                except Exception as card_err:
+                    logger.warning(f"Gagal mem-parsing elemen produk: {card_err}")
                     continue
 
-                title = ""
-                product_url = ""
+        except Exception as parse_err:
+            logger.error(f"Gagal mem-parsing HTML katalog halaman {page}: {parse_err}")
+            break
 
-                title_elem = card.find("h3")
-                if title_elem:
-                    a_tag = title_elem.find("a")
-                    if a_tag:
-                        title = a_tag.get_text(strip=True)
-                        raw_href = a_tag.get("href", "")
-                        if raw_href:
-                            product_url = urljoin("https://shop.maujual.com", raw_href).split("?")[0]
-                    else:
-                        title = title_elem.get_text(strip=True)
+        if not page_products:
+            # Tidak ada produk baru di halaman ini → selesai
+            logger.info(f"Halaman {page} kosong / tidak ada produk baru. Pagination selesai.")
+            break
 
-                if not product_url:
-                    fig_a = card.select_one("figure a")
-                    if fig_a and fig_a.get("href"):
-                        raw_href = fig_a.get("href")
-                        if "/products/" in raw_href:
-                            product_url = urljoin("https://shop.maujual.com", raw_href).split("?")[0]
-                            if not title and fig_a.get("aria-label"):
-                                title = fig_a.get("aria-label")
+        logger.info(f"Halaman {page}: {len(page_products)} produk ditemukan.")
+        all_products.extend(page_products)
+        page += 1
+        time.sleep(0.5)  # Jeda kecil antar request agar tidak membebani server
 
-                if not product_url or not title or title.lower() == "product title":
-                    continue
-
-                price = "Harga tidak tersedia"
-                price_elem = card.select_one(".price, [class*='price']")
-                if price_elem:
-                    price = price_elem.get_text(" ", strip=True)
-
-                products.append({
-                    "title": title,
-                    "price": price,
-                    "url": product_url
-                })
-            except Exception as card_err:
-                logger.warning(f"Gagal mem-parsing elemen produk: {card_err}")
-                continue
-
-    except Exception as parse_err:
-        logger.error(f"Gagal mem-parsing HTML katalog: {parse_err}")
-        return []
-
-    logger.info(f"Ditemukan {len(products)} produk aktif di halaman katalog.")
-    return products
+    logger.info(f"Total produk aktif di seluruh halaman katalog: {len(all_products)}")
+    return all_products
 
 
 # ==============================================================================
@@ -1194,17 +1223,19 @@ def scan_single_wishlist(wishlist):
             p_title, p_price, specs, raw_ready_variants, wishlist
         )
 
-        sent_set.add(p_url)
-
         if is_match:
             found_count += 1
             logger.info(f"[SCAN AWAL COCOK] {p_title} ({p_price}) -> Target '{wl_name}'")
+            # Tandai sebagai sudah dikirim HANYA jika notifikasi berhasil dikirim
+            sent_set.add(p_url)
             if TELEGRAM_TOKEN and CHAT_ID:
                 send_telegram_notification(
                     p_title, p_price, p_url, specs, matched_variants, image_url,
                     target_label=wl_name, is_initial_scan=True
                 )
             time.sleep(1)
+        # Produk yang tidak cocok TIDAK ditandai, sehingga bisa dievaluasi ulang
+        # oleh job_check_stok() di run berikutnya jika ada stok baru
 
     sent_data[wl_id] = sent_set
     save_sent_data(sent_data)
