@@ -1,9 +1,9 @@
 {
   "wishlists": [
     {
-      "id": "wl_budget_1jt",
-      "name": "HP Maks 1 Jt (RAM 3GB+ / ROM 32GB+)",
-      "is_active": true,
+      "id": "wl_budget_900k",
+      "name": "HP 900K",
+      "is_active": false,
       "brands": [],
       "storages": [
         "32GB",
@@ -14,7 +14,7 @@
       ],
       "conditions": [],
       "min_ram_gb": 3,
-      "max_price": 1000000,
+      "max_price": 900000,
       "created_at": "2026-09-30 04:11:00"
     }
   ]
